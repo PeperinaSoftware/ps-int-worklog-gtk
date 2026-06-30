@@ -1,0 +1,8 @@
+# Meson build output
+/build/
+/_build/
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store

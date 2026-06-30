@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="io.github.peperina.WorklogCalendar"
+          path="/io/github/peperina/WorklogCalendar/">
+
+    <!-- ===================== Jira credentials ===================== -->
+    <key name="jira-site" type="s">
+      <default>''</default>
+      <summary>Jira Cloud site</summary>
+      <description>e.g. https://your-company.atlassian.net</description>
+    </key>
+    <key name="jira-email" type="s">
+      <default>''</default>
+      <summary>Jira account email</summary>
+    </key>
+    <key name="jira-token" type="s">
+      <default>''</default>
+      <summary>Jira API token (NOT your password)</summary>
+    </key>
+
+    <!-- ===================== Clockify credentials ===================== -->
+    <key name="clockify-api-key" type="s">
+      <default>''</default>
+      <summary>Clockify API key (Profile -> Settings -> API)</summary>
+    </key>
+    <key name="clockify-workspace-id" type="s">
+      <default>''</default>
+      <summary>Resolved Clockify workspace id (auto-filled)</summary>
+    </key>
+    <key name="clockify-user-id" type="s">
+      <default>''</default>
+      <summary>Resolved Clockify user id (auto-filled)</summary>
+    </key>
+    <key name="clockify-default-project-id" type="s">
+      <default>''</default>
+      <summary>Project preselected in the new-entry modal and used by the Jira->Clockify sync</summary>
+    </key>
+    <key name="clockify-billable-default" type="b">
+      <default>true</default>
+      <summary>Default value of the billable toggle on new Clockify entries</summary>
+    </key>
+
+    <!-- ===================== Calendar / view ===================== -->
+    <key name="worklog-source" type="s">
+      <choices>
+        <choice value="jira"/>
+        <choice value="clockify"/>
+        <choice value="jira-clockify"/>
+      </choices>
+      <default>'jira'</default>
+      <summary>Which calendar source to render</summary>
+    </key>
+    <key name="view-mode" type="s">
+      <choices>
+        <choice value="9h"/>
+        <choice value="24h"/>
+      </choices>
+      <default>'9h'</default>
+      <summary>9h (09:00-18:00) or 24h (00:00-24:00) grid</summary>
+    </key>
+    <key name="daily-target-hours" type="d">
+      <range min="0" max="24"/>
+      <default>8.0</default>
+      <summary>Daily target hours used for the per-day totals diff</summary>
+    </key>
+    <key name="show-issue-summary" type="b">
+      <default>false</default>
+      <summary>Append the issue title after the key on each Jira block</summary>
+    </key>
+    <key name="issue-jql" type="s">
+      <default>'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC'</default>
+      <summary>JQL used to populate the issue picker in the new-worklog modal</summary>
+    </key>
+    <key name="issue-max" type="i">
+      <range min="10" max="200"/>
+      <default>50</default>
+      <summary>Max issues to show in the picker</summary>
+    </key>
+
+    <!-- ===================== Bottom panel ===================== -->
+    <key name="show-bottom-panel" type="b">
+      <default>true</default>
+      <summary>Show the rings / subtasks / heatmap panel below the calendar</summary>
+    </key>
+    <key name="bottom-view" type="s">
+      <choices>
+        <choice value="rings"/>
+        <choice value="subtasks"/>
+        <choice value="heatmap"/>
+      </choices>
+      <default>'rings'</default>
+      <summary>Which bottom-panel view to show</summary>
+    </key>
+    <key name="show-subtask-table" type="b">
+      <default>true</default>
+      <summary>Enable the subtask-table view in the bottom panel</summary>
+    </key>
+    <key name="subtask-jql" type="s">
+      <default>'issuetype in subTaskIssueTypes() AND assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC'</default>
+      <summary>JQL that drives the subtask table</summary>
+    </key>
+    <key name="subtask-show-parent" type="b">
+      <default>true</default>
+      <summary>Show the parent-issue column in the subtask table</summary>
+    </key>
+
+    <!-- ===================== Sprint rings ===================== -->
+    <key name="sprint-strategy" type="s">
+      <choices>
+        <choice value="subtask-customfield"/>
+        <choice value="agile-board"/>
+        <choice value="assignee-jql"/>
+      </choices>
+      <default>'subtask-customfield'</default>
+      <summary>How to discover the active sprint</summary>
+    </key>
+    <key name="sprint-field" type="s">
+      <default>'customfield_10020'</default>
+      <summary>Jira issue field holding the sprint array</summary>
+    </key>
+    <key name="sprint-board-id" type="i">
+      <range min="0" max="9999999"/>
+      <default>0</default>
+      <summary>Board id used by the agile-board strategy</summary>
+    </key>
+    <key name="remaining-mode" type="s">
+      <choices>
+        <choice value="api"/>
+        <choice value="calculated"/>
+      </choices>
+      <default>'api'</default>
+      <summary>How to compute remaining hours (api vs originalEstimate - timeSpent)</summary>
+    </key>
+
+    <!-- ===================== Window / behaviour ===================== -->
+    <key name="popup-width" type="i">
+      <range min="600" max="2200"/>
+      <default>1000</default>
+      <summary>Floating popup width in pixels</summary>
+    </key>
+    <key name="popup-height" type="i">
+      <range min="400" max="1500"/>
+      <default>700</default>
+      <summary>Floating popup height in pixels</summary>
+    </key>
+    <key name="window-width" type="i">
+      <range min="700" max="3000"/>
+      <default>1280</default>
+      <summary>Main application window width</summary>
+    </key>
+    <key name="window-height" type="i">
+      <range min="500" max="2000"/>
+      <default>820</default>
+      <summary>Main application window height</summary>
+    </key>
+    <key name="run-in-background" type="b">
+      <default>true</default>
+      <summary>Keep running in the background (tray) when windows are closed</summary>
+    </key>
+    <key name="show-tray-icon" type="b">
+      <default>true</default>
+      <summary>Show the top-bar clock indicator</summary>
+    </key>
+    <key name="debug" type="b">
+      <default>true</default>
+      <summary>Log every Jira/Clockify request to stdout</summary>
+    </key>
+  </schema>
+</schemalist>

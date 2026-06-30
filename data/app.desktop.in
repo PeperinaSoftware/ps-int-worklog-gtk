@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Worklog Calendar
+GenericName=Jira / Clockify Worklog
+Comment=Carga y visualiza tus worklogs de Jira y Clockify en una vista semanal
+Comment[en]=Log and review your Jira and Clockify worklogs in a weekly view
+Exec=@APP_ID@
+Icon=@APP_ID@
+Terminal=false
+Categories=Office;ProjectManagement;GTK;
+Keywords=jira;clockify;worklog;timesheet;calendar;sprint;
+StartupNotify=true
+StartupWMClass=@APP_ID@
