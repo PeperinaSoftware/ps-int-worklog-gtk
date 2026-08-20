@@ -304,13 +304,18 @@ namespace Worklog {
             if (jira_worklogs.size == 0) return { 0, 0, 0 };
             if (!yield ensure_context()) return { 0, 0, 0 };
 
+            // Dedup + creation are BOTH scoped to default_project_id so two
+            // Jira instances that map to different Clockify projects can't
+            // interfere with each other's sync.
+            string target_project = default_project_id;
             var to_create = new Gee.ArrayList<Worklog>();
             foreach (var j in jira_worklogs) {
-                string desc = j.issue_key + (j.issue_summary.length > 0 ? ": " + j.issue_summary : "");
+                string desc = sync_description(j);
                 int64 js = j.started;
                 int64 je = j.started + (int64) j.duration_sec * 1000;
                 bool hit = false;
                 foreach (var c in entries) {
+                    if (c.project_id != target_project) continue;
                     if (c.description != desc) continue;
                     int64 cs = c.started;
                     int64 ce_end = c.started + (int64) c.duration_sec * 1000;
@@ -320,12 +325,19 @@ namespace Worklog {
                 else to_create.add(j);
             }
             foreach (var j in to_create) {
-                string desc = j.issue_key + (j.issue_summary.length > 0 ? ": " + j.issue_summary : "");
+                string desc = sync_description(j);
                 int64 je = j.started + (int64) j.duration_sec * 1000;
                 var r = yield create_entry(j.started, je, desc, default_project_id, {}, default_billable);
                 if (r.ok) created++; else failed++;
             }
             return { created, skipped, failed };
+        }
+
+        // Clockify description for a synced Jira worklog. With sync-bracket-key
+        // on it wraps the issue key in [brackets], e.g. "[CP-3526]: título".
+        private string sync_description(Worklog j) {
+            string key = cfg.sync_bracket_key ? "[" + j.issue_key + "]" : j.issue_key;
+            return key + (j.issue_summary.length > 0 ? ": " + j.issue_summary : "");
         }
 
         // ------------------------------------------------------------------

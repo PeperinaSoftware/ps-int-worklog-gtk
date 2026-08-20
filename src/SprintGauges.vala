@@ -33,12 +33,13 @@ namespace Worklog {
             append(hline());
 
             // Sprint column
-            var col1 = new Gtk.Box(Gtk.Orientation.VERTICAL, 4);
+            var col1 = new Gtk.Box(Gtk.Orientation.VERTICAL, 1);
             col1.set_valign(Gtk.Align.CENTER);
             var t1 = new Gtk.Label("Sprint");
             t1.add_css_class("heading");
             col1.append(t1);
-            sprint_ring = new RingGauge(110);
+            sprint_ring = new RingGauge(64);
+            sprint_ring.thickness = 8;
             sprint_ring.set_halign(Gtk.Align.CENTER);
             col1.append(sprint_ring);
             sprint_dates = new Gtk.Label("Sin sprint activo");
@@ -50,12 +51,13 @@ namespace Worklog {
             append(hline());
 
             // Horas column
-            var col2 = new Gtk.Box(Gtk.Orientation.VERTICAL, 4);
+            var col2 = new Gtk.Box(Gtk.Orientation.VERTICAL, 1);
             col2.set_valign(Gtk.Align.CENTER);
             var t2 = new Gtk.Label("Horas");
             t2.add_css_class("heading");
             col2.append(t2);
-            hours_ring = new RingGauge(110);
+            hours_ring = new RingGauge(64);
+            hours_ring.thickness = 8;
             hours_ring.set_halign(Gtk.Align.CENTER);
             hours_ring.pale_color = Util.hex_rgba("#C8E6C9");
             hours_ring.use_fade_loop = true;

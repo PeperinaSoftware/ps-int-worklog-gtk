@@ -33,6 +33,32 @@ namespace Worklog {
             return jira_site_clean.length > 0 && jira_email.length > 0 && jira_token.length > 0;
         }
 
+        // ---- Per-instance Jira accessors (instance 1 or 2) ----
+        public bool jira2_enabled { get { return settings.get_boolean("jira2-enabled"); } }
+
+        public string jira_site_clean_for(int inst) {
+            string s = settings.get_string(inst == 2 ? "jira2-site" : "jira-site").strip();
+            while (s.has_suffix("/")) s = s.substring(0, s.length - 1);
+            return s;
+        }
+        public string jira_email_for(int inst) {
+            return settings.get_string(inst == 2 ? "jira2-email" : "jira-email").strip();
+        }
+        public string jira_token_for(int inst) {
+            return settings.get_string(inst == 2 ? "jira2-token" : "jira-token").strip();
+        }
+        public bool has_jira_creds_for(int inst) {
+            return jira_site_clean_for(inst).length > 0
+                && jira_email_for(inst).length > 0
+                && jira_token_for(inst).length > 0;
+        }
+        public string jira_block_color(int inst) {
+            return settings.get_string(inst == 2 ? "jira2-block-color" : "jira1-block-color").strip();
+        }
+        public string jira_clockify_project(int inst) {
+            return settings.get_string(inst == 2 ? "jira2-clockify-project-id" : "jira1-clockify-project-id").strip();
+        }
+
         // ---- Clockify ----
         public string clockify_api_key { owned get { return settings.get_string("clockify-api-key").strip(); } }
         public string clockify_workspace_id {
@@ -48,6 +74,7 @@ namespace Worklog {
             set { settings.set_string("clockify-default-project-id", value); }
         }
         public bool clockify_billable_default { get { return settings.get_boolean("clockify-billable-default"); } }
+        public bool sync_bracket_key { get { return settings.get_boolean("sync-bracket-key"); } }
 
         // ---- View / behaviour ----
         public string source {
@@ -80,5 +107,19 @@ namespace Worklog {
         public bool run_in_background { get { return settings.get_boolean("run-in-background"); } }
         public bool show_tray_icon { get { return settings.get_boolean("show-tray-icon"); } }
         public bool debug { get { return settings.get_boolean("debug"); } }
+
+        // ---- Google Calendar ----
+        public bool google_cal_enabled {
+            get { return settings.get_boolean("google-cal-enabled"); }
+            set { settings.set_boolean("google-cal-enabled", value); }
+        }
+        public string google_client_id { owned get { return settings.get_string("google-client-id").strip(); } }
+        public string google_client_secret { owned get { return settings.get_string("google-client-secret").strip(); } }
+        public string google_refresh_token {
+            owned get { return settings.get_string("google-refresh-token").strip(); }
+            set { settings.set_string("google-refresh-token", value); }
+        }
+        public string[] google_calendar_ids { owned get { return settings.get_strv("google-calendar-ids"); } }
+        public string[] google_calendar_colors { owned get { return settings.get_strv("google-calendar-colors"); } }
     }
 }

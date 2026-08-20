@@ -44,7 +44,12 @@ namespace Worklog {
             append(header);
 
             var scroller = new Gtk.ScrolledWindow();
-            scroller.vexpand = true;
+            // Fixed, compact, scrolled — must NOT vexpand or it would inflate
+            // the whole bottom panel and steal the calendar's vertical space.
+            scroller.vexpand = false;
+            scroller.set_min_content_height(96);
+            scroller.set_max_content_height(150);
+            scroller.set_propagate_natural_height(false);
             scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC);
             list = new Gtk.ListBox();
             list.add_css_class("boxed-list");

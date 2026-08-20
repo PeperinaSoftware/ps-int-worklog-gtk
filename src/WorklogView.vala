@@ -14,8 +14,11 @@ namespace Worklog {
     public class WorklogView : Gtk.Box {
         private Config cfg;
         private JiraStore jira;
+        private JiraStore jira2;
         private ClockifyStore clockify;
+        private GoogleStore google;
         private bool is_popup;
+        private Gtk.ToggleButton google_toggle;
 
         private int64 week_start;
         private Gtk.Label week_label;
@@ -27,8 +30,6 @@ namespace Worklog {
         private SubtaskTable subtask_table;
         private MonthHeatmap heatmap;
         private Gtk.Label footer_totals;
-        private Gtk.DropDown sync_project;
-        private string[] sync_project_ids = {};
         private Gtk.Box sync_box;
         private Gtk.Box bottom_panel;
 
@@ -39,21 +40,30 @@ namespace Worklog {
         public signal void open_app_requested();
         public signal void open_prefs_requested();
 
-        public WorklogView(Config cfg, JiraStore jira, ClockifyStore clockify, bool is_popup) {
+        public WorklogView(Config cfg, JiraStore jira, JiraStore jira2, ClockifyStore clockify, GoogleStore google, bool is_popup) {
             Object(orientation: Gtk.Orientation.VERTICAL, spacing: 6);
             this.cfg = cfg;
             this.jira = jira;
+            this.jira2 = jira2;
             this.clockify = clockify;
+            this.google = google;
             this.is_popup = is_popup;
             this.week_start = Util.sunday_of(Util.now_ms());
             set_margin_start(8); set_margin_end(8); set_margin_top(8); set_margin_bottom(8);
             build();
 
             jira.changed.connect(on_store_changed);
+            jira2.changed.connect(on_store_changed);
             clockify.changed.connect(on_store_changed);
             cfg.settings.changed["worklog-source"].connect(() => { calendar.change_source(cfg.source); update_source_ui(); sync_now(); });
             cfg.settings.changed["view-mode"].connect(() => { update_mode_toggle(); calendar.refresh(); });
             cfg.settings.changed["bottom-view"].connect(() => { apply_bottom_view(); refresh_bottom(); });
+            cfg.settings.changed["google-cal-enabled"].connect(() => {
+                google_toggle.active = cfg.google_cal_enabled;
+                calendar.refresh();
+                if (cfg.google_cal_enabled) google.fetch_week.begin(week_start, (o, r) => google.fetch_week.end(r));
+            });
+            cfg.settings.changed["jira2-enabled"].connect(() => { calendar.refresh(); sync_now(); });
 
             // First load.
             apply_bottom_view();
@@ -67,7 +77,7 @@ namespace Worklog {
             status_label.add_css_class("caption");
             append(status_label);
 
-            calendar = new CalendarGrid(cfg, jira, clockify);
+            calendar = new CalendarGrid(cfg, jira, jira2, clockify, google);
             calendar.set_week(week_start);
             calendar.change_source(cfg.source);
             calendar.vexpand = true;
@@ -122,6 +132,18 @@ namespace Worklog {
             sync.clicked.connect(sync_now);
             header.append(sync);
 
+            // Google Calendar events toggle.
+            google_toggle = new Gtk.ToggleButton();
+            google_toggle.set_icon_name("x-office-calendar-symbolic");
+            google_toggle.add_css_class("flat");
+            google_toggle.set_tooltip_text("Mostrar / ocultar eventos de Google Calendar");
+            google_toggle.active = cfg.google_cal_enabled;
+            google_toggle.toggled.connect(() => {
+                if (google_toggle.active != cfg.google_cal_enabled)
+                    cfg.google_cal_enabled = google_toggle.active;
+            });
+            header.append(google_toggle);
+
             // Source menu (jira / jira-clockify / clockify).
             var menu_btn = new Gtk.MenuButton();
             menu_btn.set_icon_name("open-menu-symbolic");
@@ -161,11 +183,18 @@ namespace Worklog {
 
         private void build_bottom_panel() {
             bottom_panel = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
-            bottom_panel.set_size_request(-1, 210);
+            bottom_panel.set_valign(Gtk.Align.START);
+            // Explicitly non-expanding so the calendar (which fills) gets ALL
+            // the vertical slack — otherwise the subtask scroller's vexpand
+            // propagates up and this panel would grab half the empty space.
+            bottom_panel.set_vexpand(false);
 
             bottom_stack = new Gtk.Stack();
             bottom_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_UP_DOWN);
             bottom_stack.hexpand = true;
+            // Size the panel to the CURRENT view, not the tallest one — the
+            // subtask table's scroller would otherwise inflate the whole panel.
+            bottom_stack.set_vhomogeneous(false);
             gauges = new SprintGauges(jira);
             gauges.set_valign(Gtk.Align.CENTER);
             bottom_stack.add_named(gauges, "rings");
@@ -207,17 +236,11 @@ namespace Worklog {
             footer_totals.hexpand = true;
             footer.append(footer_totals);
 
-            // Combined-mode sync controls.
+            // Combined-mode sync button. Each Jira instance maps to a Clockify
+            // project (set in Preferences → Clockify).
             sync_box = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
-            sync_project = new Gtk.DropDown(null, null);
-            sync_project.set_tooltip_text("Proyecto destino del sync Jira → Clockify");
-            sync_project.notify["selected"].connect(() => {
-                uint sel = sync_project.get_selected();
-                if (sel < sync_project_ids.length) cfg.clockify_default_project_id = sync_project_ids[sel];
-            });
-            sync_box.append(sync_project);
             var sync_btn = new Gtk.Button.with_label("Jira → Clockify");
-            sync_btn.set_tooltip_text("Crea una entrada Clockify por cada worklog de Jira que aún no tenga su réplica.");
+            sync_btn.set_tooltip_text("Crea una entrada Clockify por cada worklog de Jira que aún no tenga su réplica, en el proyecto mapeado por instancia.");
             sync_btn.clicked.connect(sync_jira_into_clockify);
             sync_box.append(sync_btn);
             footer.append(sync_box);
@@ -256,12 +279,13 @@ namespace Worklog {
 
         private void update_source_ui() {
             sync_box.visible = cfg.source == "jira-clockify";
-            if (cfg.source == "jira-clockify") populate_sync_projects();
         }
 
         public void sync_now() {
             if (show_jira()) jira.fetch_week.begin(week_start, (o, r) => jira.fetch_week.end(r));
+            if (show_jira() && cfg.jira2_enabled) jira2.fetch_week.begin(week_start, (o, r) => jira2.fetch_week.end(r));
             if (show_clockify()) clockify.fetch_week.begin(week_start, (o, r) => clockify.fetch_week.end(r));
+            if (cfg.google_cal_enabled) google.fetch_week.begin(week_start, (o, r) => google.fetch_week.end(r));
             refresh_bottom();
         }
 
@@ -287,6 +311,7 @@ namespace Worklog {
             update_footer_totals();
             // Surface store errors.
             if (jira.last_error.length > 0 && show_jira()) set_status("Jira: " + jira.last_error, true);
+            else if (cfg.jira2_enabled && jira2.last_error.length > 0 && show_jira()) set_status("Jira 2: " + jira2.last_error, true);
             else if (clockify.last_error.length > 0 && show_clockify()) set_status("Clockify: " + clockify.last_error, true);
         }
 
@@ -295,6 +320,10 @@ namespace Worklog {
             if (show_jira()) {
                 int jt = 0; foreach (var w in jira.worklogs) jt += w.duration_sec;
                 sb.append("Jira: %s".printf(Util.fmt_hm(jt)));
+                if (cfg.jira2_enabled) {
+                    int jt2 = 0; foreach (var w in jira2.worklogs) jt2 += w.duration_sec;
+                    sb.append("   ·   Jira 2: %s".printf(Util.fmt_hm(jt2)));
+                }
             }
             if (show_clockify()) {
                 int ct = 0; foreach (var e in clockify.entries) ct += e.duration_sec;
@@ -304,27 +333,12 @@ namespace Worklog {
             footer_totals.label = sb.str;
         }
 
-        private void populate_sync_projects() {
-            var model = new Gtk.StringList(null);
-            var ids = new Gee.ArrayList<string>();
-            model.append("(sin proyecto)"); ids.add("");
-            int sel = 0, i = 1;
-            foreach (var p in clockify.projects) {
-                model.append(p.name); ids.add(p.id);
-                if (p.id == cfg.clockify_default_project_id) sel = i;
-                i++;
-            }
-            sync_project_ids = ids.to_array();
-            sync_project.set_model(model);
-            sync_project.set_selected(sel);
-        }
-
         // ------------------------------------------------------------------
         private Gtk.Window root_window() { return (Gtk.Window) get_root(); }
 
         private JiraEditDialog ensure_jira_dialog() {
             if (jira_dialog == null) {
-                jira_dialog = new JiraEditDialog(root_window(), jira);
+                jira_dialog = new JiraEditDialog(root_window(), jira, jira2, cfg);
                 jira_dialog.saved.connect(sync_now);
             }
             return jira_dialog;
@@ -337,22 +351,25 @@ namespace Worklog {
             return clockify_dialog;
         }
 
-        private void on_create(bool is_jira, int64 day_ms, int64 start_ms, int64 end_ms) {
-            if (is_jira) ensure_jira_dialog().open_create(day_ms, start_ms, end_ms);
-            else ensure_clockify_dialog().open_create(start_ms, end_ms);
+        private JiraStore jira_of(string kind) { return kind == "jira2" ? jira2 : jira; }
+
+        private void on_create(string kind, int64 day_ms, int64 start_ms, int64 end_ms) {
+            if (kind == "clockify") ensure_clockify_dialog().open_create(start_ms, end_ms);
+            else ensure_jira_dialog().open_create(day_ms, start_ms, end_ms);
         }
 
-        private void on_edit(bool is_jira, Object entry) {
-            if (is_jira) ensure_jira_dialog().open_edit((Worklog) entry);
-            else ensure_clockify_dialog().open_edit((ClockifyEntry) entry);
+        private void on_edit(string kind, Object entry) {
+            if (kind == "clockify") ensure_clockify_dialog().open_edit((ClockifyEntry) entry);
+            else ensure_jira_dialog().open_edit((Worklog) entry, kind == "jira2" ? 2 : 1);
         }
 
-        private void on_move(bool is_jira, Object entry, int64 new_start_ms, int new_dur_sec) {
-            if (is_jira) {
+        private void on_move(string kind, Object entry, int64 new_start_ms, int new_dur_sec) {
+            if (kind != "clockify") {
                 var w = (Worklog) entry;
+                var store = jira_of(kind);
                 set_status("Actualizando worklog Jira…", false);
-                jira.update_worklog.begin(w.issue_key, w.id, new_start_ms, new_dur_sec, null, (o, r) => {
-                    var res = jira.update_worklog.end(r);
+                store.update_worklog.begin(w.issue_key, w.id, new_start_ms, new_dur_sec, null, (o, r) => {
+                    var res = store.update_worklog.end(r);
                     if (res.ok) sync_now(); else set_status("Jira: " + res.err, true);
                 });
             } else {
@@ -366,12 +383,13 @@ namespace Worklog {
             }
         }
 
-        private void on_duplicate(bool is_jira, Object entry) {
-            if (is_jira) {
+        private void on_duplicate(string kind, Object entry) {
+            if (kind != "clockify") {
                 var w = (Worklog) entry;
+                var store = jira_of(kind);
                 set_status("Duplicando worklog Jira…", false);
-                jira.create_worklog.begin(w.issue_key, w.started, w.duration_sec, w.comment, (o, r) => {
-                    var res = jira.create_worklog.end(r);
+                store.create_worklog.begin(w.issue_key, w.started, w.duration_sec, w.comment, (o, r) => {
+                    var res = store.create_worklog.end(r);
                     if (res.ok) sync_now(); else set_status("Jira: " + res.err, true);
                 });
             } else {
@@ -385,15 +403,27 @@ namespace Worklog {
             }
         }
 
+        // Sync both Jira instances into their mapped Clockify projects,
+        // sequentially, and report combined totals.
         private void sync_jira_into_clockify() {
             set_status("Copiando Jira → Clockify…", false);
-            string pid = cfg.clockify_default_project_id;
             bool bill = cfg.clockify_billable_default;
-            clockify.sync_from_jira.begin(jira.worklogs, pid, bill, (o, r) => {
-                var counts = clockify.sync_from_jira.end(r);
-                set_status("Sync terminado: %d creadas, %d ya existían, %d fallaron.".printf(counts[0], counts[1], counts[2]), counts[2] > 0);
-                clockify.fetch_week.begin(week_start, (o2, r2) => clockify.fetch_week.end(r2));
+            clockify.sync_from_jira.begin(jira.worklogs, cfg.jira_clockify_project(1), bill, (o1, r1) => {
+                var c1 = clockify.sync_from_jira.end(r1);
+                if (cfg.jira2_enabled) {
+                    clockify.sync_from_jira.begin(jira2.worklogs, cfg.jira_clockify_project(2), bill, (o2, r2) => {
+                        var c2 = clockify.sync_from_jira.end(r2);
+                        report_sync(c1[0] + c2[0], c1[1] + c2[1], c1[2] + c2[2]);
+                    });
+                } else {
+                    report_sync(c1[0], c1[1], c1[2]);
+                }
             });
+        }
+
+        private void report_sync(int created, int skipped, int failed) {
+            set_status("Sync terminado: %d creadas, %d ya existían, %d fallaron.".printf(created, skipped, failed), failed > 0);
+            clockify.fetch_week.begin(week_start, (o, r) => clockify.fetch_week.end(r));
         }
 
         private void set_status(string msg, bool error) {

@@ -18,6 +18,40 @@
       <summary>Jira API token (NOT your password)</summary>
     </key>
 
+    <!-- ===================== Second Jira instance ===================== -->
+    <key name="jira2-enabled" type="b">
+      <default>false</default>
+      <summary>Enable a second Jira instance (own credentials, color and tab)</summary>
+    </key>
+    <key name="jira2-site" type="s">
+      <default>''</default>
+      <summary>Second Jira Cloud site</summary>
+    </key>
+    <key name="jira2-email" type="s">
+      <default>''</default>
+      <summary>Second Jira account email</summary>
+    </key>
+    <key name="jira2-token" type="s">
+      <default>''</default>
+      <summary>Second Jira API token</summary>
+    </key>
+    <key name="jira1-block-color" type="s">
+      <default>'#9b91e6'</default>
+      <summary>Base color (hex) for the first Jira instance blocks (drawn translucent)</summary>
+    </key>
+    <key name="jira2-block-color" type="s">
+      <default>'#4aa3df'</default>
+      <summary>Base color (hex) for the second Jira instance blocks (drawn translucent)</summary>
+    </key>
+    <key name="jira1-clockify-project-id" type="s">
+      <default>''</default>
+      <summary>Clockify project the first Jira instance syncs into</summary>
+    </key>
+    <key name="jira2-clockify-project-id" type="s">
+      <default>''</default>
+      <summary>Clockify project the second Jira instance syncs into</summary>
+    </key>
+
     <!-- ===================== Clockify credentials ===================== -->
     <key name="clockify-api-key" type="s">
       <default>''</default>
@@ -38,6 +72,10 @@
     <key name="clockify-billable-default" type="b">
       <default>true</default>
       <summary>Default value of the billable toggle on new Clockify entries</summary>
+    </key>
+    <key name="sync-bracket-key" type="b">
+      <default>false</default>
+      <summary>Wrap the issue key in [brackets] in the Jira->Clockify sync description ([CP-3526]: title)</summary>
     </key>
 
     <!-- ===================== Calendar / view ===================== -->
@@ -158,12 +196,38 @@
       <summary>Keep running in the background (tray) when windows are closed</summary>
     </key>
     <key name="show-tray-icon" type="b">
-      <default>true</default>
-      <summary>Show the top-bar clock indicator</summary>
+      <default>false</default>
+      <summary>Show the top-bar clock indicator (temporarily disabled by default)</summary>
     </key>
     <key name="debug" type="b">
       <default>true</default>
       <summary>Log every Jira/Clockify request to stdout</summary>
+    </key>
+
+    <!-- ===================== Google Calendar (read-only) ===================== -->
+    <key name="google-cal-enabled" type="b">
+      <default>false</default>
+      <summary>Show Google Calendar events as immovable background blocks</summary>
+    </key>
+    <key name="google-client-id" type="s">
+      <default>''</default>
+      <summary>Google OAuth client id (TV and Limited Input devices type)</summary>
+    </key>
+    <key name="google-client-secret" type="s">
+      <default>''</default>
+      <summary>Google OAuth client secret</summary>
+    </key>
+    <key name="google-refresh-token" type="s">
+      <default>''</default>
+      <summary>OAuth refresh token from the one-time device-code authorization</summary>
+    </key>
+    <key name="google-calendar-ids" type="as">
+      <default>[]</default>
+      <summary>Up to 3 calendar ids to read events from (parallel to colors)</summary>
+    </key>
+    <key name="google-calendar-colors" type="as">
+      <default>[]</default>
+      <summary>Base block color (hex) per calendar in google-calendar-ids</summary>
     </key>
   </schema>
 </schemalist>

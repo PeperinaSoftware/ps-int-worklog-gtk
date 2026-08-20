@@ -13,7 +13,9 @@ namespace Worklog {
         private Config cfg;
         private Http http;
         private JiraStore jira;
+        private JiraStore jira2;
         private ClockifyStore clockify;
+        private GoogleStore google;
         private TrayIcon? tray = null;
         private MainWindow? main_window = null;
         private PopupWindow? popup = null;
@@ -28,20 +30,25 @@ namespace Worklog {
         construct {
             cfg = new Config();
             http = new Http();
-            jira = new JiraStore(cfg, http);
+            jira = new JiraStore(cfg, http, 1);
+            jira2 = new JiraStore(cfg, http, 2);
             clockify = new ClockifyStore(cfg, http);
+            google = new GoogleStore(cfg, http);
         }
 
         public override void startup() {
             base.startup();
             load_css();
 
-            // Keep the process alive even with no visible windows so the
-            // indicator can re-open them. Released on quit_app().
-            hold();
-            held = true;
-
-            if (cfg.show_tray_icon) setup_tray();
+            // Only run headless (tray-backed) when the indicator is enabled.
+            // With the tray off the app behaves like a normal window app:
+            // closing the last window quits it (see Windows.vala), so we must
+            // NOT hold() — otherwise it would linger with no window and no tray.
+            if (cfg.show_tray_icon) {
+                setup_tray();
+                hold();
+                held = true;
+            }
 
             // Application-wide actions.
             var quit = new SimpleAction("quit", null);
@@ -66,7 +73,7 @@ namespace Worklog {
 
         public void show_clock() {
             if (popup == null) {
-                popup = new PopupWindow(this, cfg, jira, clockify);
+                popup = new PopupWindow(this, cfg, jira, jira2, clockify, google);
             }
             popup.present();
             popup.sync();
@@ -74,7 +81,7 @@ namespace Worklog {
 
         public void show_main() {
             if (main_window == null) {
-                main_window = new MainWindow(this, cfg, jira, clockify);
+                main_window = new MainWindow(this, cfg, jira, jira2, clockify, google);
             }
             main_window.present();
             main_window.sync();
@@ -82,7 +89,7 @@ namespace Worklog {
 
         public void open_prefs(Gtk.Window parent) {
             if (prefs == null) {
-                prefs = new PreferencesWindow(parent, cfg, jira, clockify);
+                prefs = new PreferencesWindow(parent, cfg, jira, jira2, clockify, google);
                 prefs.close_request.connect(() => { prefs = null; return false; });
             }
             prefs.present();
@@ -107,6 +114,16 @@ namespace Worklog {
                 .wb-warmred   { background: #e5534b; }
                 .wb-mediumgray{ background: #8b949e; }
                 .error { color: @error_color; }
+                /* Frameless drop-down popup: transparent window + rounded card
+                   with a soft shadow, so it reads as a floating widget. */
+                .worklog-popup { background-color: transparent; }
+                .worklog-popup-card {
+                    background-color: @window_bg_color;
+                    border: 1px solid alpha(@window_fg_color, 0.14);
+                    border-radius: 12px;
+                    margin: 10px;
+                    box-shadow: 0 4px 18px alpha(black, 0.5);
+                }
             """);
             Gtk.StyleContext.add_provider_for_display(
                 Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);

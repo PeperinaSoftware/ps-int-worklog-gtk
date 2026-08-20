@@ -9,7 +9,10 @@
 namespace Worklog {
 
     public class JiraEditDialog : Adw.Window {
-        private JiraStore store;
+        private JiraStore jira1;
+        private JiraStore jira2;
+        private Config cfg;
+        private JiraStore store;   // the active instance
         private bool is_edit = false;
         private Worklog? editing = null;
         private int64 day_ms = 0;
@@ -27,13 +30,19 @@ namespace Worklog {
         private Gtk.Button save_btn;
         private Gtk.Button delete_btn;
         private Gtk.Box picker_box;
+        private Gtk.Box instance_box;
+        private Gtk.ToggleButton inst1_btn;
+        private Gtk.ToggleButton inst2_btn;
 
         public signal void saved();
 
-        public JiraEditDialog(Gtk.Window parent, JiraStore store) {
+        public JiraEditDialog(Gtk.Window parent, JiraStore jira1, JiraStore jira2, Config cfg) {
             Object(transient_for: parent, modal: true, title: "Worklog de Jira");
-            this.store = store;
-            set_default_size(640, 540);
+            this.jira1 = jira1;
+            this.jira2 = jira2;
+            this.cfg = cfg;
+            this.store = jira1;
+            set_default_size(640, 560);
             build();
         }
 
@@ -45,6 +54,21 @@ namespace Worklog {
             var content = new Gtk.Box(Gtk.Orientation.VERTICAL, 10);
             content.set_margin_start(16); content.set_margin_end(16);
             content.set_margin_top(12); content.set_margin_bottom(12);
+
+            // Instance selector (Jira 1 / Jira 2) — shown only when a second
+            // instance is enabled and we're creating a new worklog.
+            instance_box = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 0);
+            instance_box.add_css_class("linked");
+            instance_box.set_halign(Gtk.Align.CENTER);
+            inst1_btn = new Gtk.ToggleButton.with_label("Jira 1");
+            inst2_btn = new Gtk.ToggleButton.with_label("Jira 2");
+            inst2_btn.set_group(inst1_btn);
+            inst1_btn.active = true;
+            inst1_btn.toggled.connect(() => { if (inst1_btn.active) set_active_instance(1); });
+            inst2_btn.toggled.connect(() => { if (inst2_btn.active) set_active_instance(2); });
+            instance_box.append(inst1_btn);
+            instance_box.append(inst2_btn);
+            content.append(instance_box);
 
             // Time row
             var timerow = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 8);
@@ -122,6 +146,14 @@ namespace Worklog {
             set_content(toolbar);
         }
 
+        // Switch the active Jira instance (create mode); reload the picker.
+        private void set_active_instance(int inst) {
+            store = (inst == 2) ? jira2 : jira1;
+            selected_key = "";
+            picker_selected.label = "(ninguno)";
+            if (!is_edit) refresh_picker();
+        }
+
         public void open_create(int64 day_ms, int64 s, int64 e) {
             is_edit = false; editing = null;
             this.day_ms = day_ms; start_ms = s; end_ms = e;
@@ -133,12 +165,17 @@ namespace Worklog {
             status.label = "";
             picker_box.visible = true;
             delete_btn.visible = false;
+            // Instance tabs only when a second instance is configured.
+            instance_box.visible = cfg.jira2_enabled;
+            inst1_btn.active = true;
+            store = jira1;
             refresh_picker();
             present();
         }
 
-        public void open_edit(Worklog w) {
+        public void open_edit(Worklog w, int inst = 1) {
             is_edit = true; editing = w;
+            store = (inst == 2) ? jira2 : jira1;
             start_ms = w.started; end_ms = w.started + (int64) w.duration_sec * 1000;
             selected_key = w.issue_key;
             picker_selected.label = w.issue_key + (w.issue_summary.length > 0 ? ": " + w.issue_summary : "");
@@ -147,6 +184,7 @@ namespace Worklog {
             comment_view.buffer.text = w.comment;
             status.label = "";
             picker_box.visible = false;
+            instance_box.visible = false;   // locked to the block's instance
             delete_btn.visible = true;
             present();
         }

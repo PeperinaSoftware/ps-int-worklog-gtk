@@ -26,10 +26,10 @@ namespace Worklog {
         private string jira_key = "";
         private int req_id = 0;
 
-        private const int LETTER_H = 14;
-        private const int NUMBER_H = 16;
-        private const int CELL_H = 20;
-        private const int ICON_COL = 26;
+        private const int LETTER_H = 11;
+        private const int NUMBER_H = 12;
+        private const int CELL_H = 15;
+        private const int ICON_COL = 22;
 
         public signal void day_selected(int64 day_ms);
 

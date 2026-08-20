@@ -53,6 +53,27 @@ namespace Worklog {
             }
         }
 
+        // application/x-www-form-urlencoded POST (Google OAuth device flow).
+        // bearer, when set, becomes the Authorization: Bearer <token> header.
+        public async HttpResponse send_form(string method, string url,
+                                            string? bearer, string? form_body) {
+            var msg = new Soup.Message(method, url);
+            if (msg == null) return new HttpResponse(0, "URL inválida: " + url);
+            var h = msg.request_headers;
+            h.append("Accept", "application/json");
+            if (bearer != null) h.append("Authorization", "Bearer " + bearer);
+            if (form_body != null) {
+                var bytes = new Bytes(form_body.data);
+                msg.set_request_body_from_bytes("application/x-www-form-urlencoded", bytes);
+            }
+            try {
+                var resp = yield session.send_and_read_async(msg, Priority.DEFAULT, null);
+                return new HttpResponse((int) msg.status_code, bytes_to_string(resp));
+            } catch (Error e) {
+                return new HttpResponse(0, e.message);
+            }
+        }
+
         private static string bytes_to_string(Bytes? b) {
             if (b == null) return "";
             unowned uint8[] data = b.get_data();

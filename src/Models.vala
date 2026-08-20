@@ -91,4 +91,13 @@ namespace Worklog {
         public string to_status = "";
         public string to_status_color = "";
     }
+
+    // Read-only Google Calendar event rendered as a background block.
+    public class GEvent : Object {
+        public string id = "";
+        public string summary = "";
+        public int64 started = 0;
+        public int duration_sec = 0;
+        public string calendar_id = "";
+    }
 }

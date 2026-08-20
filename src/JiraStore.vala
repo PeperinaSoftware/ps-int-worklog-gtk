@@ -14,6 +14,7 @@ namespace Worklog {
     public class JiraStore : Object {
         private Config cfg;
         private Http http;
+        public int instance = 1;   // 1 = primary, 2 = second Jira instance
 
         public Gee.ArrayList<Worklog> worklogs { get; private set; default = new Gee.ArrayList<Worklog>(); }
         public Gee.ArrayList<Issue> assignable_issues { get; private set; default = new Gee.ArrayList<Issue>(); }
@@ -32,21 +33,22 @@ namespace Worklog {
 
         public signal void changed();
 
-        public JiraStore(Config cfg, Http http) {
+        public JiraStore(Config cfg, Http http, int instance = 1) {
             this.cfg = cfg;
             this.http = http;
+            this.instance = instance;
         }
 
         // ------------------------------------------------------------------
         private bool have_creds() {
-            if (!cfg.has_jira_creds()) {
+            if (!cfg.has_jira_creds_for(instance)) {
                 last_error = "Faltan credenciales de Jira (sitio, email o token).";
                 return false;
             }
             return true;
         }
-        private string auth() { return Http.basic_auth(cfg.jira_email, cfg.jira_token); }
-        private string site() { return cfg.jira_site_clean; }
+        private string auth() { return Http.basic_auth(cfg.jira_email_for(instance), cfg.jira_token_for(instance)); }
+        private string site() { return cfg.jira_site_clean_for(instance); }
 
         private async HttpResponse jget(string url) {
             log("GET " + url);
@@ -549,7 +551,7 @@ namespace Worklog {
         private void log(string msg) {
             debug_log += msg + "\n";
             if (debug_log.length > 80000) debug_log = debug_log.substring(debug_log.length - 40000);
-            if (cfg.debug) stdout.printf("[JiraWorklog] %s\n", msg);
+            if (cfg.debug) stdout.printf("[JiraWorklog %d] %s\n", instance, msg);
         }
         public void clear_debug_log() { debug_log = ""; changed(); }
     }

@@ -8,19 +8,30 @@ namespace Worklog {
     public class PreferencesWindow : Adw.PreferencesWindow {
         private Config cfg;
         private JiraStore jira;
+        private JiraStore jira2;
         private ClockifyStore clockify;
+        private GoogleStore google;
+        private string google_device_code = "";
+        private uint google_poll_id = 0;
 
-        public PreferencesWindow(Gtk.Window parent, Config cfg, JiraStore jira, ClockifyStore clockify) {
+        public PreferencesWindow(Gtk.Window parent, Config cfg, JiraStore jira, JiraStore jira2, ClockifyStore clockify, GoogleStore google) {
             Object(transient_for: parent, modal: false);
             this.cfg = cfg;
             this.jira = jira;
+            this.jira2 = jira2;
             this.clockify = clockify;
+            this.google = google;
             set_title("Preferencias");
-            set_default_size(620, 720);
+            set_default_size(640, 760);
             add(build_general());
             add(build_jira());
             add(build_clockify());
             add(build_sprint());
+            add(build_google());
+            close_request.connect(() => {
+                if (google_poll_id != 0) { Source.remove(google_poll_id); google_poll_id = 0; }
+                return false;
+            });
         }
 
         private Adw.PreferencesPage build_general() {
@@ -87,29 +98,44 @@ namespace Worklog {
             page.set_icon_name("network-server-symbolic");
 
             var g = new Adw.PreferencesGroup();
-            g.set_title("Credenciales de Jira Cloud");
+            g.set_title("Jira 1 — credenciales");
             g.set_description("Generá un API token en id.atlassian.com → Security → API tokens.");
             g.add(entry_row("Site URL", "jira-site"));
             g.add(entry_row("Email", "jira-email"));
             g.add(password_row("API token", "jira-token"));
+            g.add(entry_row("Color de bloques (hex)", "jira1-block-color"));
+            g.add(jira_test_row(jira));
+            page.add(g);
 
+            var g2 = new Adw.PreferencesGroup();
+            g2.set_title("Jira 2 — segunda instancia");
+            g2.set_description("Una segunda cuenta de Jira con su propio color; comparte la grilla y puede solaparse con la primera.");
+            g2.add(switch_row("Habilitar la segunda instancia", "jira2-enabled"));
+            g2.add(entry_row("Site URL", "jira2-site"));
+            g2.add(entry_row("Email", "jira2-email"));
+            g2.add(password_row("API token", "jira2-token"));
+            g2.add(entry_row("Color de bloques (hex)", "jira2-block-color"));
+            g2.add(jira_test_row(jira2));
+            page.add(g2);
+            return page;
+        }
+
+        private Adw.ActionRow jira_test_row(JiraStore store) {
             var test = new Adw.ActionRow();
             test.set_title("Probar conexión");
-            var test_btn = new Gtk.Button.with_label("Probar");
-            test_btn.set_valign(Gtk.Align.CENTER);
-            var test_lbl = new Gtk.Label("");
-            test_btn.clicked.connect(() => {
-                test_lbl.label = "Probando…";
-                jira.fetch_assignable_issues.begin((o, r) => {
-                    bool ok = jira.fetch_assignable_issues.end(r);
-                    test_lbl.label = ok ? "✓ OK (%d issues)".printf(jira.assignable_issues.size) : "✗ " + jira.last_error;
+            var btn = new Gtk.Button.with_label("Probar");
+            btn.set_valign(Gtk.Align.CENTER);
+            var lbl = new Gtk.Label("");
+            btn.clicked.connect(() => {
+                lbl.label = "Probando…";
+                store.fetch_assignable_issues.begin((o, r) => {
+                    bool ok = store.fetch_assignable_issues.end(r);
+                    lbl.label = ok ? "✓ OK (%d issues)".printf(store.assignable_issues.size) : "✗ " + store.last_error;
                 });
             });
-            test.add_suffix(test_lbl);
-            test.add_suffix(test_btn);
-            g.add(test);
-            page.add(g);
-            return page;
+            test.add_suffix(lbl);
+            test.add_suffix(btn);
+            return test;
         }
 
         private Adw.PreferencesPage build_clockify() {
@@ -140,7 +166,57 @@ namespace Worklog {
             test.add_suffix(test_btn);
             g.add(test);
             page.add(g);
+
+            // Per-instance Jira -> Clockify project mapping.
+            var map = new Adw.PreferencesGroup();
+            map.set_title("Mapeo Jira → Clockify");
+            map.set_description("Cada instancia de Jira se sincroniza en su propio proyecto de Clockify (evita que se pisen).");
+            map.add(switch_row("Envolver el código en corchetes ([CP-3526]: título)", "sync-bracket-key"));
+            var c1 = new Adw.ComboRow(); c1.set_title("Proyecto para Jira 1");
+            var c2 = new Adw.ComboRow(); c2.set_title("Proyecto para Jira 2");
+            var ids = new Gee.ArrayList<string>();
+            var load = new Adw.ActionRow();
+            load.set_title("Proyectos de Clockify");
+            var load_btn = new Gtk.Button.with_label("Cargar proyectos");
+            load_btn.set_valign(Gtk.Align.CENTER);
+            var load_lbl = new Gtk.Label("");
+            load_btn.clicked.connect(() => {
+                load_lbl.label = "Cargando…";
+                clockify.ensure_context.begin((o, r) => {
+                    bool ok = clockify.ensure_context.end(r);
+                    if (!ok) { load_lbl.label = "✗ " + clockify.last_error; return; }
+                    load_lbl.label = "✓ %d".printf(clockify.projects.size);
+                    fill_project_combo(c1, ids, cfg.jira_clockify_project(1), "jira1-clockify-project-id");
+                    fill_project_combo(c2, ids, cfg.jira_clockify_project(2), "jira2-clockify-project-id");
+                });
+            });
+            load.add_suffix(load_lbl);
+            load.add_suffix(load_btn);
+            map.add(load);
+            map.add(c1);
+            map.add(c2);
+            page.add(map);
             return page;
+        }
+
+        private void fill_project_combo(Adw.ComboRow row, Gee.ArrayList<string> ids, string current, string key) {
+            var model = new Gtk.StringList(null);
+            ids.clear();
+            model.append("(sin proyecto)"); ids.add("");
+            int sel = 0, i = 1;
+            foreach (var p in clockify.projects) {
+                model.append(p.name); ids.add(p.id);
+                if (p.id == current) sel = i;
+                i++;
+            }
+            row.set_model(model);
+            row.set_selected(sel);
+            // Capture ids by copying, since the shared list is reused.
+            var snapshot = ids.to_array();
+            row.notify["selected"].connect(() => {
+                uint s = row.get_selected();
+                if (s < snapshot.length) cfg.settings.set_string(key, snapshot[s]);
+            });
         }
 
         private Adw.PreferencesPage build_sprint() {
@@ -174,6 +250,131 @@ namespace Worklog {
             g.add(rem);
             page.add(g);
             return page;
+        }
+
+        private const string[] PALETTE = {"#e74c3c", "#e67e22", "#f1c40f", "#2ecc71",
+                                          "#1abc9c", "#3498db", "#9b59b6", "#e84393", "#95a5a6"};
+
+        private Adw.PreferencesPage build_google() {
+            var page = new Adw.PreferencesPage();
+            page.set_title("Google");
+            page.set_icon_name("x-office-calendar-symbolic");
+
+            var g = new Adw.PreferencesGroup();
+            g.set_title("Google Calendar (solo lectura)");
+            g.set_description("Muestra tus eventos como bloques translúcidos detrás del worklog. Autorización de una sola vez con código de dispositivo (sin servidor local). Ver docs/GOOGLE_CALENDAR.md.");
+            g.add(switch_row("Mostrar los eventos de Google Calendar", "google-cal-enabled"));
+            g.add(entry_row("Client ID", "google-client-id"));
+            g.add(password_row("Client secret", "google-client-secret"));
+            g.add(password_row("Refresh token", "google-refresh-token"));
+            page.add(g);
+
+            var auth = new Adw.PreferencesGroup();
+            auth.set_title("Autorizar");
+            var status_row = new Adw.ActionRow();
+            status_row.set_title("Estado");
+            status_row.set_subtitle("Cargá Client ID + secret y tocá «Conectar».");
+            var connect_btn = new Gtk.Button.with_label("Conectar");
+            connect_btn.set_valign(Gtk.Align.CENTER);
+            connect_btn.add_css_class("suggested-action");
+            connect_btn.clicked.connect(() => start_google_auth(status_row));
+            status_row.add_suffix(connect_btn);
+            auth.add(status_row);
+
+            var cal_status = new Adw.ActionRow();
+            cal_status.set_title("Mis calendarios");
+            cal_status.set_subtitle("Pegá abajo los IDs (o «primary»).");
+            var load_btn = new Gtk.Button.with_label("Cargar");
+            load_btn.set_valign(Gtk.Align.CENTER);
+            load_btn.clicked.connect(() => {
+                cal_status.set_subtitle("Cargando…");
+                google.load_calendars.begin((o, r) => {
+                    var list = google.load_calendars.end(r);
+                    if (list.size == 0) { cal_status.set_subtitle("No pude cargar (¿autorizaste?)."); return; }
+                    var sb = new StringBuilder();
+                    int n = 0;
+                    foreach (var e in list.entries) {
+                        if (n++ > 0) sb.append("\n");
+                        sb.append("%s  (%s)".printf(e.value, e.key));
+                        if (n >= 8) break;
+                    }
+                    cal_status.set_subtitle(sb.str);
+                });
+            });
+            cal_status.add_suffix(load_btn);
+            auth.add(cal_status);
+            page.add(auth);
+
+            var cals = new Adw.PreferencesGroup();
+            cals.set_title("Calendarios a mostrar (hasta 3)");
+            for (int i = 0; i < 3; i++) cals.add(calendar_row(i));
+            page.add(cals);
+            return page;
+        }
+
+        // One calendar slot: an EntryRow for the id + a color dropdown suffix.
+        private Adw.EntryRow calendar_row(int idx) {
+            var row = new Adw.EntryRow();
+            row.set_title("Calendar ID %d".printf(idx + 1));
+            row.set_text(strv_at("google-calendar-ids", idx));
+            row.changed.connect(() => set_strv_at("google-calendar-ids", idx, row.get_text().strip()));
+
+            var drop = new Gtk.DropDown(new Gtk.StringList(PALETTE), null);
+            drop.set_valign(Gtk.Align.CENTER);
+            string cur = strv_at("google-calendar-colors", idx);
+            for (int i = 0; i < PALETTE.length; i++) if (PALETTE[i] == cur) { drop.set_selected(i); break; }
+            drop.notify["selected"].connect(() => {
+                uint s = drop.get_selected();
+                if (s < PALETTE.length) set_strv_at("google-calendar-colors", idx, PALETTE[s]);
+            });
+            row.add_suffix(drop);
+            return row;
+        }
+
+        private string strv_at(string key, int idx) {
+            var a = cfg.settings.get_strv(key);
+            return (idx < a.length) ? a[idx] : "";
+        }
+        private void set_strv_at(string key, int idx, string val) {
+            var a = cfg.settings.get_strv(key);
+            string[] three = { idx == 0 ? val : (0 < a.length ? a[0] : ""),
+                               idx == 1 ? val : (1 < a.length ? a[1] : ""),
+                               idx == 2 ? val : (2 < a.length ? a[2] : "") };
+            cfg.settings.set_strv(key, three);
+        }
+
+        private void start_google_auth(Adw.ActionRow status_row) {
+            if (google_poll_id != 0) { Source.remove(google_poll_id); google_poll_id = 0; }
+            status_row.set_subtitle("Solicitando código de dispositivo…");
+            google.request_device_code.begin((o, r) => {
+                var dc = google.request_device_code.end(r);
+                if (!dc.ok) { status_row.set_subtitle("Error: " + dc.error); return; }
+                google_device_code = dc.device_code;
+                status_row.set_subtitle("Abrí %s e ingresá el código «%s». Esperando aprobación…"
+                    .printf(dc.verification_url, dc.user_code));
+                try { AppInfo.launch_default_for_uri(dc.verification_url, null); } catch (Error e) {}
+                int64 deadline = Util.now_ms() + (int64) dc.expires_in * 1000;
+                google_poll_id = Timeout.add_seconds(dc.interval, () => {
+                    if (Util.now_ms() > deadline) {
+                        status_row.set_subtitle("El código expiró. Volvé a intentar.");
+                        google_poll_id = 0;
+                        return Source.REMOVE;
+                    }
+                    google.poll_token.begin(google_device_code, (o2, r2) => {
+                        string res = google.poll_token.end(r2);
+                        if (res == "ok") {
+                            status_row.set_subtitle("¡Listo! Google Calendar autorizado.");
+                            if (google_poll_id != 0) { Source.remove(google_poll_id); google_poll_id = 0; }
+                        } else if (res == "pending" || res == "slow_down") {
+                            // keep polling
+                        } else {
+                            status_row.set_subtitle("Error autorizando: " + res);
+                            if (google_poll_id != 0) { Source.remove(google_poll_id); google_poll_id = 0; }
+                        }
+                    });
+                    return Source.CONTINUE;
+                });
+            });
         }
 
         // ---- row factories ----

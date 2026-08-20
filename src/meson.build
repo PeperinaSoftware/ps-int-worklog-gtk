@@ -7,6 +7,7 @@ sources = files(
   'Models.vala',
   'JiraStore.vala',
   'ClockifyStore.vala',
+  'GoogleStore.vala',
   'RingGauge.vala',
   'SprintGauges.vala',
   'MonthHeatmap.vala',

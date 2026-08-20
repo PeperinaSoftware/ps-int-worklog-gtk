@@ -2,16 +2,17 @@
  * CalendarGrid.vala - the week grid ("la planilla").
  *
  * A single Cairo DrawingArea inside a vertical ScrolledWindow renders the day
- * headers, per-day totals row, the hour-label column and the 7 day columns
- * with worklog blocks for both sources. In combined ("jira-clockify") mode each
- * day column is split in half (Jira left / Clockify right).
+ * headers, per-day totals row, the hour-label column and the 7 day columns with
+ * worklog blocks. Sources are routed by a `kind` string:
+ *   - "jira"     : first Jira instance (configurable color)
+ *   - "jira2"    : optional second Jira instance (own color; shares the region)
+ *   - "clockify" : Clockify entries
+ * In combined ("jira-clockify") mode each day column is split in half: both Jira
+ * instances on the left, Clockify on the right.
  *
- * Interaction (GestureDrag + secondary GestureClick):
- *   - drag on an empty area of a day -> create (snap 30 min, 10 min with Shift)
- *   - click an existing block        -> edit
- *   - drag the middle of a block      -> move (cross-day + time)
- *   - drag a block's top/bottom edge  -> resize
- *   - right-click a block             -> menu (Duplicar)
+ * Google Calendar events (read-only) are drawn as translucent, immovable blocks
+ * behind everything. Blocks that overlap another of the same source get an
+ * orange (Jira) / gold (Clockify) outline.
  */
 
 namespace Worklog {
@@ -19,7 +20,9 @@ namespace Worklog {
     public class CalendarGrid : Gtk.Box {
         private Config cfg;
         private JiraStore jira;
+        private JiraStore jira2;
         private ClockifyStore clockify;
+        private GoogleStore google;
         public int64 week_start { get; set; }
         public string source { get; set; default = "jira"; }
 
@@ -28,40 +31,52 @@ namespace Worklog {
         private int last_width = 800;
 
         private const double HOUR_W = 56;
-        private const double ROW_H = 22;
+        private const double MIN_ROW = 22;   // minimum 30-min slot height (px)
+        private int last_height = 400;
+        // Row height stretches to fill the viewport (so the 9h grid has no empty
+        // band below it); clamped to MIN_ROW so the 24h grid scrolls instead.
+        private double ROW_H {
+            get {
+                double h = (last_height - GRID_TOP) / (double) slots_per_day();
+                return double.max(MIN_ROW, h);
+            }
+        }
         private const double HEADER_H = 22;
         private const double TOTALS_H = 22;
         private const double GRID_TOP = HEADER_H + TOTALS_H;
-        private const double EDGE = 6;   // px hit-zone for edge resize
+        private const double EDGE = 6;
 
-        // Drag state.
         private enum Mode { NONE, CREATE, MOVE, RESIZE_TOP, RESIZE_BOTTOM }
         private Mode drag_mode = Mode.NONE;
         private double press_x;
         private double press_y;
-        private bool press_is_jira = true;
+        private string press_kind = "jira";     // "jira" | "jira2" | "clockify"
         private int press_day = 0;
         private Object? drag_entry = null;
         private int64 drag_started = 0;
         private int drag_dur = 0;
         private bool fine = false;
-        // create preview (px within day col)
         private double sel_top;
         private double sel_bottom;
-        private double cur_dx = 0;
-        private double cur_dy = 0;
 
-        // Signals consumed by WorklogView.
-        public signal void create_requested(bool is_jira, int64 day_ms, int64 start_ms, int64 end_ms);
-        public signal void edit_requested(bool is_jira, Object entry);
-        public signal void move_requested(bool is_jira, Object entry, int64 new_start_ms, int new_dur_sec);
-        public signal void duplicate_requested(bool is_jira, Object entry);
+        // Overlap id sets per source, recomputed each draw.
+        private Gee.HashSet<string> ov_jira = new Gee.HashSet<string>();
+        private Gee.HashSet<string> ov_jira2 = new Gee.HashSet<string>();
+        private Gee.HashSet<string> ov_clockify = new Gee.HashSet<string>();
 
-        public CalendarGrid(Config cfg, JiraStore jira, ClockifyStore clockify) {
+        // Signals consumed by WorklogView. `kind` is "jira" | "jira2" | "clockify".
+        public signal void create_requested(string kind, int64 day_ms, int64 start_ms, int64 end_ms);
+        public signal void edit_requested(string kind, Object entry);
+        public signal void move_requested(string kind, Object entry, int64 new_start_ms, int new_dur_sec);
+        public signal void duplicate_requested(string kind, Object entry);
+
+        public CalendarGrid(Config cfg, JiraStore jira, JiraStore jira2, ClockifyStore clockify, GoogleStore google) {
             Object(orientation: Gtk.Orientation.VERTICAL, spacing: 0);
             this.cfg = cfg;
             this.jira = jira;
+            this.jira2 = jira2;
             this.clockify = clockify;
+            this.google = google;
             vexpand = true;
             hexpand = true;
 
@@ -73,12 +88,15 @@ namespace Worklog {
 
             area = new Gtk.DrawingArea();
             area.hexpand = true;
-            area.set_content_height((int) (GRID_TOP + slots_per_day() * ROW_H));
+            area.vexpand = true;   // fill the viewport; rows stretch (see ROW_H)
+            area.set_content_height((int) (GRID_TOP + slots_per_day() * MIN_ROW));
             area.set_draw_func(draw);
             scroller.set_child(area);
 
             jira.changed.connect(() => { update_height(); area.queue_draw(); });
+            jira2.changed.connect(() => area.queue_draw());
             clockify.changed.connect(() => area.queue_draw());
+            google.changed.connect(() => area.queue_draw());
 
             var drag = new Gtk.GestureDrag();
             drag.drag_begin.connect(on_drag_begin);
@@ -97,13 +115,15 @@ namespace Worklog {
         public void refresh() { update_height(); area.queue_draw(); }
 
         private void update_height() {
-            area.set_content_height((int) (GRID_TOP + slots_per_day() * ROW_H));
+            area.set_content_height((int) (GRID_TOP + slots_per_day() * MIN_ROW));
         }
 
         // ---- geometry helpers ----
         private bool combined() { return source == "jira-clockify"; }
         private bool show_jira() { return source == "jira" || source == "jira-clockify"; }
+        private bool show_jira2() { return show_jira() && cfg.jira2_enabled; }
         private bool show_clockify() { return source == "clockify" || source == "jira-clockify"; }
+        private bool show_google() { return cfg.google_cal_enabled; }
         private int start_hour() { return cfg.view_mode == "24h" ? 0 : 9; }
         private int end_hour() { return cfg.view_mode == "24h" ? 24 : 18; }
         private int slots_per_day() { return (end_hour() - start_hour()) * 2; }
@@ -126,15 +146,48 @@ namespace Worklog {
             return double.max(ROW_H / 3.0, (dur_sec / 1800.0) * ROW_H);
         }
 
+        // ---- overlap maps ----
+        private Gee.HashSet<string> compute_overlaps(Gee.ArrayList<Worklog>? wl, Gee.ArrayList<ClockifyEntry>? ce) {
+            var ids = new Gee.HashSet<string>();
+            // Bucket per day, then O(n^2) within a day (small n).
+            var starts = new Gee.ArrayList<int64?>();
+            var ends = new Gee.ArrayList<int64?>();
+            var idlist = new Gee.ArrayList<string>();
+            var days = new Gee.ArrayList<int>();
+            if (wl != null) foreach (var w in wl) {
+                starts.add(w.started); ends.add(w.started + (int64) w.duration_sec * 1000);
+                idlist.add(w.id); days.add(day_index_of(w.started));
+            }
+            if (ce != null) foreach (var e in ce) {
+                starts.add(e.started); ends.add(e.started + (int64) e.duration_sec * 1000);
+                idlist.add(e.id); days.add(day_index_of(e.started));
+            }
+            int n = idlist.size;
+            for (int i = 0; i < n; i++) {
+                for (int j = i + 1; j < n; j++) {
+                    if (days[i] != days[j] || days[i] < 0) continue;
+                    if (starts[i] < ends[j] && starts[j] < ends[i]) {
+                        ids.add(idlist[i]); ids.add(idlist[j]);
+                    }
+                }
+            }
+            return ids;
+        }
+
         // ---- drawing ----
         private void draw(Gtk.DrawingArea da, Cairo.Context cr, int width, int height) {
             last_width = width;
+            last_height = height;
             cr.select_font_face("Sans", Cairo.FontSlant.NORMAL, Cairo.FontWeight.NORMAL);
             cr.set_font_size(9);
             double cw = col_w();
             int slots = slots_per_day();
 
-            // Background slot rows (under everything).
+            ov_jira = show_jira() ? compute_overlaps(jira.worklogs, null) : new Gee.HashSet<string>();
+            ov_jira2 = show_jira2() ? compute_overlaps(jira2.worklogs, null) : new Gee.HashSet<string>();
+            ov_clockify = show_clockify() ? compute_overlaps(null, clockify.entries) : new Gee.HashSet<string>();
+
+            // Background slot rows.
             for (int d = 0; d < 7; d++) {
                 double bx = HOUR_W + d * cw;
                 if (is_weekend(d)) { set_rgba(cr, 0, 0, 0, 0.18); cr.rectangle(bx, GRID_TOP, cw, slots * ROW_H); cr.fill(); }
@@ -168,22 +221,23 @@ namespace Worklog {
                 cr.show_text(lbl);
             }
 
-            // Worklog blocks.
-            if (show_jira()) foreach (var w in jira.worklogs) draw_block(cr, w.started, w.duration_sec, true, w);
-            if (show_clockify()) foreach (var e in clockify.entries) draw_block(cr, e.started, e.duration_sec, false, e);
+            // Google Calendar events (behind everything else).
+            if (show_google()) foreach (var g in google.events) draw_google(cr, g);
 
-            // Day headers + totals (drawn last so they sit above blocks that
-            // could otherwise poke into negative y on the 9h view).
+            // Worklog blocks: jira1, jira2, clockify.
+            if (show_jira()) foreach (var w in jira.worklogs) draw_block(cr, w, "jira", ov_jira.contains(w.id));
+            if (show_jira2()) foreach (var w in jira2.worklogs) draw_block(cr, w, "jira2", ov_jira2.contains(w.id));
+            if (show_clockify()) foreach (var e in clockify.entries) draw_block(cr, e, "clockify", ov_clockify.contains(e.id));
+
+            // Day headers + totals.
             set_rgba(cr, 0.12, 0.12, 0.14, 1);
             cr.rectangle(0, 0, width, GRID_TOP);
             cr.fill();
-            // corner
             draw_cell_border(cr, 0, 0, HOUR_W, GRID_TOP);
             set_rgba(cr, 1, 1, 1, 0.6);
             center_text(cr, "total", 0, 0, HOUR_W, GRID_TOP, false);
             for (int d = 0; d < 7; d++) {
                 double bx = HOUR_W + d * cw;
-                // header
                 if (is_today(d)) set_rgba(cr, 0.30, 0.55, 0.90, 0.22);
                 else if (is_weekend(d)) set_rgba(cr, 0, 0, 0, 0.18);
                 else set_rgba(cr, 1, 1, 1, 0.04);
@@ -191,7 +245,6 @@ namespace Worklog {
                 draw_cell_border(cr, bx, 0, cw, HEADER_H);
                 set_rgba(cr, 1, 1, 1, 1);
                 center_text(cr, day_header(d), bx, 0, cw, HEADER_H, true);
-                // totals
                 int sec = total_sec_for_day(d);
                 double t = cfg.daily_target_hours * 3600;
                 if (sec <= 0) set_rgba(cr, 1, 1, 1, 0.02);
@@ -208,7 +261,7 @@ namespace Worklog {
                 double bx = HOUR_W + press_day * cw;
                 double x = bx;
                 double w = cw;
-                if (combined()) { x = press_is_jira ? bx : bx + cw / 2; w = cw / 2; }
+                if (combined()) { x = (press_kind != "clockify") ? bx : bx + cw / 2; w = cw / 2; }
                 set_rgba(cr, 0.30, 0.55, 0.90, 0.30);
                 cr.rectangle(x, GRID_TOP + sel_top, w, sel_bottom - sel_top); cr.fill();
                 set_rgba(cr, 0.30, 0.55, 0.90, 1);
@@ -220,11 +273,57 @@ namespace Worklog {
             }
         }
 
-        private void draw_block(Cairo.Context cr, int64 started, int dur_sec, bool is_jira, Object entry) {
-            // When this entry is being moved/resized, draw the ghost at the
-            // dragged position instead.
-            int64 eff_start = started;
-            int eff_dur = dur_sec;
+        // Translucent, full-column-width, immovable Google event block.
+        private void draw_google(Cairo.Context cr, GEvent g) {
+            int d = day_index_of(g.started);
+            if (d < 0) return;
+            double cw = col_w();
+            double x = HOUR_W + d * cw + 2;
+            double w = cw - 4;
+            double y = y_for(g.started, d);
+            double h = h_for(g.duration_sec);
+            var col = Util.hex_rgba(google.calendar_color(g.calendar_id));
+            rounded(cr, x, y, w, h, 3);
+            cr.set_source_rgba(col.red, col.green, col.blue, 0.18);
+            cr.fill();
+            cr.set_source_rgba(col.red, col.green, col.blue, 0.45);
+            cr.set_line_width(1);
+            rounded(cr, x + 0.5, y + 0.5, w - 1, h - 1, 3);
+            cr.stroke();
+            if (!google_covered(g, d)) {
+                cr.save();
+                cr.rectangle(x + 2, y, w - 4, h);
+                cr.clip();
+                set_rgba(cr, 1, 1, 1, 0.85);
+                cr.set_font_size(9);
+                cr.move_to(x + 4, y + 12);
+                cr.show_text(g.summary);
+                cr.restore();
+            }
+        }
+
+        // A Google block is "covered" when a worklog block on the same day
+        // overlaps it in time (so its label doesn't bleed through).
+        private bool google_covered(GEvent g, int d) {
+            int64 s = g.started, e = g.started + (int64) g.duration_sec * 1000;
+            if (show_jira()) foreach (var w in jira.worklogs) {
+                if (day_index_of(w.started) != d) continue;
+                if (s < w.started + (int64) w.duration_sec * 1000 && w.started < e) return true;
+            }
+            if (show_jira2()) foreach (var w in jira2.worklogs) {
+                if (day_index_of(w.started) != d) continue;
+                if (s < w.started + (int64) w.duration_sec * 1000 && w.started < e) return true;
+            }
+            if (show_clockify()) foreach (var c in clockify.entries) {
+                if (day_index_of(c.started) != d) continue;
+                if (s < c.started + (int64) c.duration_sec * 1000 && c.started < e) return true;
+            }
+            return false;
+        }
+
+        private void draw_block(Cairo.Context cr, Object entry, string kind, bool overlapping) {
+            int64 eff_start = entry_started(entry);
+            int eff_dur = entry_dur(entry);
             if (drag_entry == entry) {
                 if (drag_mode == Mode.MOVE) { eff_start = drag_started; }
                 else if (drag_mode == Mode.RESIZE_TOP) { eff_start = drag_started; eff_dur = drag_dur; }
@@ -232,6 +331,7 @@ namespace Worklog {
             }
             int d = day_index_of(eff_start);
             if (d < 0) return;
+            bool is_jira = (kind != "clockify");
             double cw = col_w();
             double bx = HOUR_W + d * cw;
             double x, w;
@@ -243,11 +343,12 @@ namespace Worklog {
             }
             double y = y_for(eff_start, d);
             double h = h_for(eff_dur);
-            if (y + h < GRID_TOP || y > GRID_TOP + slots_per_day() * ROW_H) { /* still draw, clipped */ }
 
-            // fill + border
-            if (is_jira) set_rgba(cr, 155/255.0, 145/255.0, 230/255.0, 0.55);
-            else {
+            // Fill.
+            if (is_jira) {
+                var c = Util.hex_rgba(cfg.jira_block_color(kind == "jira2" ? 2 : 1), 0.55);
+                cr.set_source_rgba(c.red, c.green, c.blue, c.alpha);
+            } else {
                 var pc = entry as ClockifyEntry;
                 if (!combined() && pc != null && pc.project_color.length > 0) {
                     var c = Util.hex_rgba(pc.project_color, 0.6);
@@ -258,13 +359,25 @@ namespace Worklog {
             }
             rounded(cr, x, y, w, h, 3);
             cr.fill();
-            if (is_jira) set_rgba(cr, 120/255.0, 110/255.0, 200/255.0, 0.95);
-            else set_rgba(cr, 70/255.0, 170/255.0, 100/255.0, 0.95);
-            cr.set_line_width(1);
+
+            // Border (overlap outline overrides the normal color).
+            if (overlapping) {
+                if (is_jira) set_rgba(cr, 1, 140/255.0, 0, 1);       // orange
+                else set_rgba(cr, 1, 215/255.0, 0, 1);               // gold
+                cr.set_line_width(2);
+            } else {
+                if (is_jira) {
+                    var c = Util.hex_rgba(cfg.jira_block_color(kind == "jira2" ? 2 : 1), 0.95);
+                    cr.set_source_rgba(c.red, c.green, c.blue, c.alpha);
+                } else {
+                    set_rgba(cr, 70/255.0, 170/255.0, 100/255.0, 0.95);
+                }
+                cr.set_line_width(1);
+            }
             rounded(cr, x + 0.5, y + 0.5, w - 1, h - 1, 3);
             cr.stroke();
 
-            // text
+            // Text.
             cr.save();
             cr.rectangle(x + 2, y, w - 4, h);
             cr.clip();
@@ -282,7 +395,7 @@ namespace Worklog {
             }
             if (h <= ROW_H + 1) {
                 cr.move_to(x + 4, y + h / 2 + 3);
-                cr.show_text(is_jira ? Util.fmt_clock(eff_start) + "  " + bottom : Util.fmt_clock(eff_start) + "  " + bottom);
+                cr.show_text(Util.fmt_clock(eff_start) + "  " + bottom);
             } else {
                 cr.move_to(x + 4, y + 11);
                 cr.show_text(top);
@@ -295,12 +408,13 @@ namespace Worklog {
         // ---- gestures ----
         private void on_drag_begin(double x, double y) {
             press_x = x; press_y = y;
-            fine = (get_state_shift());
+            fine = get_state_shift();
             drag_entry = null;
             drag_mode = Mode.NONE;
 
-            // Hit-test existing blocks (topmost last-drawn wins -> iterate reverse).
-            if (hit_test(x, y, out drag_entry, out press_is_jira)) {
+            string hk;
+            if (hit_test(x, y, out drag_entry, out hk)) {
+                press_kind = hk;
                 var es = entry_started(drag_entry);
                 var ed = entry_dur(drag_entry);
                 int d = day_index_of(es);
@@ -313,13 +427,13 @@ namespace Worklog {
                 return;
             }
 
-            // Empty area -> begin a create selection.
             int day = day_index_at(x);
             if (day < 0) { drag_mode = Mode.NONE; return; }
             press_day = day;
             double cw = col_w();
             double bx = HOUR_W + day * cw;
-            press_is_jira = combined() ? (x - bx < cw / 2) : (source != "clockify");
+            bool left = combined() ? (x - bx < cw / 2) : (source != "clockify");
+            press_kind = left ? "jira" : "clockify";
             double local_y = y - GRID_TOP;
             sel_top = snap_px(local_y);
             sel_bottom = sel_top + step_px();
@@ -329,7 +443,6 @@ namespace Worklog {
 
         private void on_drag_update(double ox, double oy) {
             fine = get_state_shift();
-            cur_dx = ox; cur_dy = oy;
             if (drag_mode == Mode.CREATE) {
                 double lo = double.min(press_y, press_y + oy) - GRID_TOP;
                 double hi = double.max(press_y, press_y + oy) - GRID_TOP;
@@ -364,7 +477,7 @@ namespace Worklog {
                 int64 start_ms = px_to_ms(press_day, sel_top);
                 int64 end_ms = px_to_ms(press_day, sel_bottom);
                 if (end_ms <= start_ms) end_ms = start_ms + (fine ? 10 : 30) * 60000;
-                create_requested(press_is_jira, day_ms(press_day), start_ms, end_ms);
+                create_requested(press_kind, day_ms(press_day), start_ms, end_ms);
                 area.queue_draw();
                 return;
             }
@@ -372,24 +485,22 @@ namespace Worklog {
 
             bool moved = Math.fabs(ox) > 3 || Math.fabs(oy) > 3;
             if (!moved && mode == Mode.MOVE) {
-                // It was a click -> edit.
-                edit_requested(press_is_jira, entry);
+                edit_requested(press_kind, entry);
                 area.queue_draw();
                 return;
             }
-            // Commit move/resize.
             int64 ns = clamp_start(drag_started, drag_dur);
             int nd = int.max(600, drag_dur);
             if (ns != entry_started(entry) || nd != entry_dur(entry)) {
-                move_requested(press_is_jira, entry, ns, nd);
+                move_requested(press_kind, entry, ns, nd);
             } else {
                 area.queue_draw();
             }
         }
 
         private void on_right_click(int n, double x, double y) {
-            Object? e; bool is_jira;
-            if (!hit_test(x, y, out e, out is_jira)) return;
+            Object? e; string kind;
+            if (!hit_test(x, y, out e, out kind)) return;
             var pop = new Gtk.Popover();
             pop.set_parent(area);
             var rect = Gdk.Rectangle() { x = (int) x, y = (int) y, width = 1, height = 1 };
@@ -398,43 +509,47 @@ namespace Worklog {
             box.set_margin_start(6); box.set_margin_end(6); box.set_margin_top(6); box.set_margin_bottom(6);
             var dup = new Gtk.Button.with_label("Duplicar");
             dup.add_css_class("flat");
-            dup.clicked.connect(() => { duplicate_requested(is_jira, e); pop.popdown(); });
+            dup.clicked.connect(() => { duplicate_requested(kind, e); pop.popdown(); });
             box.append(dup);
             var ed = new Gtk.Button.with_label("Editar");
             ed.add_css_class("flat");
-            ed.clicked.connect(() => { edit_requested(is_jira, e); pop.popdown(); });
+            ed.clicked.connect(() => { edit_requested(kind, e); pop.popdown(); });
             box.append(ed);
             pop.set_child(box);
             pop.popup();
         }
 
         // ---- hit testing ----
-        private bool hit_test(double x, double y, out Object? entry, out bool is_jira) {
-            entry = null; is_jira = true;
-            // Iterate in reverse draw order: clockify on top in combined? Both
-            // are side-by-side, so order doesn't overlap. Check both.
+        private bool hit_test(double x, double y, out Object? entry, out string kind) {
+            entry = null; kind = "jira";
             if (show_clockify()) {
                 for (int i = clockify.entries.size - 1; i >= 0; i--) {
                     var e = clockify.entries.get(i);
-                    if (point_in_block(x, y, e.started, e.duration_sec, false)) { entry = e; is_jira = false; return true; }
+                    if (point_in_block(x, y, e.started, e.duration_sec, false)) { entry = e; kind = "clockify"; return true; }
+                }
+            }
+            if (show_jira2()) {
+                for (int i = jira2.worklogs.size - 1; i >= 0; i--) {
+                    var w = jira2.worklogs.get(i);
+                    if (point_in_block(x, y, w.started, w.duration_sec, true)) { entry = w; kind = "jira2"; return true; }
                 }
             }
             if (show_jira()) {
                 for (int i = jira.worklogs.size - 1; i >= 0; i--) {
                     var w = jira.worklogs.get(i);
-                    if (point_in_block(x, y, w.started, w.duration_sec, true)) { entry = w; is_jira = true; return true; }
+                    if (point_in_block(x, y, w.started, w.duration_sec, true)) { entry = w; kind = "jira"; return true; }
                 }
             }
             return false;
         }
 
-        private bool point_in_block(double x, double y, int64 started, int dur_sec, bool is_jira) {
+        private bool point_in_block(double x, double y, int64 started, int dur_sec, bool left_half) {
             int d = day_index_of(started);
             if (d < 0) return false;
             double cw = col_w();
             double bx = HOUR_W + d * cw;
             double rx, rw;
-            if (combined()) { rx = is_jira ? bx + 2 : bx + cw / 2 + 1; rw = cw / 2 - 3; }
+            if (combined()) { rx = left_half ? bx + 2 : bx + cw / 2 + 1; rw = cw / 2 - 3; }
             else { rx = bx + 2; rw = cw - 4; }
             double ry = y_for(started, d);
             double rh = h_for(dur_sec);
